@@ -12,9 +12,12 @@ struct GradeUniforms {
   black_and_white: u32,
   debug_output: u32,
   _pad: u32,
+  source_size: vec2<f32>,
+  output_size: vec2<f32>,
 };
 
 @group(0) @binding(0) var source_texture: texture_2d<f32>;
+@group(0) @binding(6) var source_sampler: sampler;
 @group(0) @binding(1) var output_texture: texture_storage_2d<rgba8unorm, write>;
 @group(0) @binding(2) var<uniform> grade: GradeUniforms;
 @group(0) @binding(3) var<storage, read> hue_band_adjustments: array<HslAdjustment, 8>;
@@ -119,12 +122,29 @@ fn luminance_mask(luminance: f32) -> f32 {
   return clamp(fade_in * fade_out, 0.0, 1.0);
 }
 
-fn lut_weights(hue: f32) -> array<f32, 8> {
+fn lut_weight(hue: f32, band: u32) -> f32 {
   let normalized_hue = (hue + 360.0) % 360.0;
   let index = u32(round(normalized_hue / 360.0 * 1023.0));
   let lo = hue_band_lut[index * 2u];
   let hi = hue_band_lut[index * 2u + 1u];
-  return array<f32, 8>(lo.x, lo.y, lo.z, lo.w, hi.x, hi.y, hi.z, hi.w);
+
+  switch band {
+    case 0u: { return lo.x; }
+    case 1u: { return lo.y; }
+    case 2u: { return lo.z; }
+    case 3u: { return lo.w; }
+    case 4u: { return hi.x; }
+    case 5u: { return hi.y; }
+    case 6u: { return hi.z; }
+    default: { return hi.w; }
+  }
+}
+
+fn dominant_lut_weight(hue: f32) -> f32 {
+  return max(
+    max(max(lut_weight(hue, 0u), lut_weight(hue, 1u)), max(lut_weight(hue, 2u), lut_weight(hue, 3u))),
+    max(max(lut_weight(hue, 4u), lut_weight(hue, 5u)), max(lut_weight(hue, 6u), lut_weight(hue, 7u)))
+  );
 }
 
 @compute @workgroup_size(8, 8, 1)
@@ -134,30 +154,37 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     return;
   }
 
-  let source = textureLoad(source_texture, vec2<i32>(global_id.xy), 0);
+  let uv = (vec2<f32>(global_id.xy) + vec2<f32>(0.5)) / grade.output_size;
+  let source = textureSampleLevel(source_texture, source_sampler, uv, 0.0);
   let linear_rgb = srgb_to_linear(source.rgb);
   var hsl = rgb_to_hsl(linear_rgb);
+  let pre_adjust_hue = hsl.x;
   let pre_adjust_luminance = hsl.z;
   let mask = luminance_mask(pre_adjust_luminance);
   let saturation_gate = smoothstep(0.02, 0.12, hsl.y);
-  let weights = lut_weights(hsl.x);
-
   hsl.x = (hsl.x + grade.global.hue * mask) % 360.0;
   hsl.y = clamp(hsl.y + grade.global.saturation * mask, 0.0, 1.0);
   hsl.z = clamp(hsl.z + grade.global.luminance * mask, 0.0, 1.0);
 
   var band_luminance_delta = 0.0;
   for (var band = 0u; band < 8u; band = band + 1u) {
-    let weight = weights[band] * saturation_gate * mask;
+    let hue_weight = lut_weight(pre_adjust_hue, band);
+    let weight = hue_weight * saturation_gate * mask;
     let adjustment = hue_band_adjustments[band];
     hsl.x = hsl.x + adjustment.hue * weight;
     hsl.y = clamp(hsl.y + adjustment.saturation * weight, 0.0, 1.0);
     hsl.z = clamp(hsl.z + adjustment.luminance * weight, 0.0, 1.0);
-    band_luminance_delta = band_luminance_delta + bw_luminance_adjustments[band] * weights[band] * saturation_gate;
+    band_luminance_delta = band_luminance_delta + bw_luminance_adjustments[band] * hue_weight * saturation_gate;
   }
 
   if (grade.debug_output == 1u) {
     textureStore(output_texture, vec2<i32>(global_id.xy), vec4<f32>(vec3<f32>(mask), source.a));
+    return;
+  }
+
+  if (grade.debug_output == 2u) {
+    let dominant_weight = dominant_lut_weight(pre_adjust_hue);
+    textureStore(output_texture, vec2<i32>(global_id.xy), vec4<f32>(vec3<f32>(dominant_weight), source.a));
     return;
   }
 
