@@ -12,9 +12,12 @@ struct GradeUniforms {
   black_and_white: u32,
   debug_output: u32,
   _pad: u32,
+  source_size: vec2<f32>,
+  output_size: vec2<f32>,
 };
 
 @group(0) @binding(0) var source_texture: texture_2d<f32>;
+@group(0) @binding(6) var source_sampler: sampler;
 @group(0) @binding(1) var output_texture: texture_storage_2d<rgba8unorm, write>;
 @group(0) @binding(2) var<uniform> grade: GradeUniforms;
 @group(0) @binding(3) var<storage, read> hue_band_adjustments: array<HslAdjustment, 8>;
@@ -134,7 +137,8 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     return;
   }
 
-  let source = textureLoad(source_texture, vec2<i32>(global_id.xy), 0);
+  let uv = (vec2<f32>(global_id.xy) + vec2<f32>(0.5)) / grade.output_size;
+  let source = textureSampleLevel(source_texture, source_sampler, uv, 0.0);
   let linear_rgb = srgb_to_linear(source.rgb);
   var hsl = rgb_to_hsl(linear_rgb);
   let pre_adjust_luminance = hsl.z;
@@ -158,6 +162,12 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
 
   if (grade.debug_output == 1u) {
     textureStore(output_texture, vec2<i32>(global_id.xy), vec4<f32>(vec3<f32>(mask), source.a));
+    return;
+  }
+
+  if (grade.debug_output == 2u) {
+    let dominant_weight = max(max(max(weights[0], weights[1]), max(weights[2], weights[3])), max(max(weights[4], weights[5]), max(weights[6], weights[7])));
+    textureStore(output_texture, vec2<i32>(global_id.xy), vec4<f32>(vec3<f32>(dominant_weight), source.a));
     return;
   }
 
