@@ -19,3 +19,5 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 image = "0.25"
 libheif-rs = "=1.0.2"
 kamadak-exif = "0.5"
+bytemuck = { version = "1", features = ["derive"] }
+pollster = "0.3"
